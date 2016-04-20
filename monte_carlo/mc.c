@@ -1,6 +1,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <float.h>
 #include <math.h>
 #include <errno.h>
 #include <time.h>
@@ -18,7 +19,8 @@
 sem_t sem;
 double SUM;
 
-double f(double x);
+double F(double, double);
+double f(double);
 void *start_routine(void*);
 long getpnum(long*);
 
@@ -27,11 +29,17 @@ int main(int argc, char *argv[])
     long num=atol(argv[1]);
     long N=atol(argv[2]);
     pthread_t *thread=calloc(num, sizeof(pthread_t));
-    if (thread==NULL)
+    long **arg=calloc(num, sizeof(long*));
+    if (thread==NULL || arg==NULL)
         handle_error("Cannot allocate memory");
     
-    int i, en;
-    long arg[3]={num, N};
+    long i, en;
+    for (i=0; i<num; i++){
+        arg[i]=calloc(3, sizeof(long));
+        if (arg[i]==NULL)
+            handle_error("Cannot allocate memory");
+        arg[i][0]=num; arg[i][1]=N;
+    }
     SUM=0;
     if (sem_init(&sem, 0, 1))
         handle_error("Cannot create semaphore");
@@ -40,27 +48,45 @@ int main(int argc, char *argv[])
     double t;
     clock_gettime(CLOCK_REALTIME, &beg);
     for (i=0; i<num; i++){
-        arg[2]=i;
-        en=pthread_create(&(thread[i]), NULL, start_routine, (void*)arg);
+        arg[i][2]=i;
+        en=pthread_create(&(thread[i]), NULL, start_routine, (void*)arg[i]);
         if (en)
             handle_error_en(en, "Cannot create thread");
     }
+
+    #ifdef RET
+        double *retval; 
+        double S=0;
+        for (i=0; i<num; i++){
+            en=pthread_join(thread[i], (void**)&retval);
+            if (en)
+                handle_error_en(en, "Cannot join thread");
+            S+=*retval;
+            free(retval);
+        }
+        SUM=S;
+    #else 
     for (i=0; i<num; i++){
         en=pthread_join(thread[i], NULL);
         if (en)
             handle_error_en(en, "Cannot join thread");
     }
+    #endif
+
     clock_gettime(CLOCK_REALTIME, &end);
     t=end.tv_sec-beg.tv_sec;
     t+=(end.tv_nsec-beg.tv_nsec)*1E-9;
 
     sem_destroy(&sem);
     free(thread);
+    for (i=0; i<num; i++)
+        free(arg[i]);
+    free(arg);
     
     #ifdef ACC
         printf("%ld, %lf\n", num, t);
     #else
-        printf("%lf\n", (b-a)*SUM/N);
+        printf("%lf\n", (M_PI*M_PI*SUM)/N);
     #endif
 
     return 0;
@@ -69,27 +95,41 @@ int main(int argc, char *argv[])
 void *start_routine(void *arg)
 {
     long rank=((long*)arg)[2];
-    unsigned int seed=time(NULL)*rank; 
+    static int r=0;
+    r=rank;
+    /*Just want to initialize seeds with such freaky values*/
+    unsigned int seed_x=time(NULL)*rank, seed_y=(unsigned int)rand_r(&seed_x);
     long pnum=getpnum((long*)arg);
     long i;
-    double S=0, val=0;
+    double x, y;
+    double *S=calloc(1, sizeof(double));
+    if (S==NULL)
+        handle_error("Cannot allocate memory");
+    *S=0;
     for (i=1; i<=pnum; i++){
-        val=a+(b-a)*((double)rand_r(&seed)/RAND_MAX);
-        S+=f(val);
+        x=(double)rand_r(&seed_x)/RAND_MAX;
+        y=(double)rand_r(&seed_y)/RAND_MAX;
+        if ((y<f(x)) || (fabs(y-f(x))<DBL_EPSILON))
+            *S+=F(x, y);
     }
     
     if (sem_wait(&sem))
         handle_error("Cannot lock semaphore");
-    SUM+=S;
+    SUM+=*S;
     if (sem_post(&sem))
         handle_error("Cannot unlock semaphore");
 
-    pthread_exit(NULL);
+    pthread_exit(S);
 }
-    
+
 double f(double x)
 {
-    return sin(x);
+    return sin((b-a)*x);
+}
+ 
+double F(double x, double y)
+{
+    return y*x;
 }
 
 long getpnum(long *arg)
